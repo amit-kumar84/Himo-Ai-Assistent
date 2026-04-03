@@ -1,0 +1,5 @@
+{
+  "name": "Himo AI Assistant",
+  "description": "A cute and caring browser-based AI assistant that follows voice commands and communicates smoothly.",
+  "requestFramePermissions": ["microphone", "camera"]
+}
