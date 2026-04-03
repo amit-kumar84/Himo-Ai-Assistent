@@ -12,8 +12,11 @@ export class AudioRecorder {
     this.onAudioData = onAudioData;
   }
 
-  async start() {
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  async start(deviceId?: string) {
+    const constraints = {
+      audio: deviceId ? { deviceId: { exact: deviceId } } : true
+    };
+    this.stream = await navigator.mediaDevices.getUserMedia(constraints);
     this.audioContext = new AudioContext({ sampleRate: 16000 });
     const source = this.audioContext.createMediaStreamSource(this.stream);
     
@@ -54,6 +57,16 @@ export class AudioPlayer {
 
   constructor() {
     this.audioContext = new AudioContext({ sampleRate: 24000 });
+  }
+
+  async setDevice(deviceId: string) {
+    if (this.audioContext && typeof (this.audioContext as any).setSinkId === 'function') {
+      try {
+        await (this.audioContext as any).setSinkId(deviceId);
+      } catch (e) {
+        console.error("Error setting audio output device:", e);
+      }
+    }
   }
 
   playChunk(base64Data: string) {

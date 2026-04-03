@@ -43,6 +43,16 @@ export default function App() {
   });
   const [showApiSetup, setShowApiSetup] = useState(!apiKey);
 
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
+  const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
+
+  const [selectedCamera, setSelectedCamera] = useState<string>(() => localStorage.getItem('himo_camera_id') || "");
+  const [selectedMic, setSelectedMic] = useState<string>(() => localStorage.getItem('himo_mic_id') || "");
+  const [selectedSpeaker, setSelectedSpeaker] = useState<string>(() => localStorage.getItem('himo_speaker_id') || "");
+
+  const [showDeviceSetup, setShowDeviceSetup] = useState(false);
+
   const { memory, updatePreference, increaseRelationship, getRelationshipStatus } = useHimoMemory();
 
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
@@ -77,6 +87,39 @@ export default function App() {
     };
     loadMessages();
   }, [currentThreadId]);
+
+  // Load Hardware Devices
+  useEffect(() => {
+    const loadDevices = async () => {
+      if (showApiSetup) return;
+      try {
+        // Request permissions first to get device labels
+        await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        
+        const videoInputs = devices.filter(d => d.kind === 'videoinput');
+        const audioInputs = devices.filter(d => d.kind === 'audioinput');
+        const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+        
+        setCameras(videoInputs);
+        setMics(audioInputs);
+        setSpeakers(audioOutputs);
+        
+        if (!localStorage.getItem('himo_devices_configured') && devices.length > 0) {
+          if (!selectedCamera && videoInputs.length > 0) setSelectedCamera(videoInputs[0].deviceId);
+          if (!selectedMic && audioInputs.length > 0) setSelectedMic(audioInputs[0].deviceId);
+          if (!selectedSpeaker && audioOutputs.length > 0) setSelectedSpeaker(audioOutputs[0].deviceId);
+          setShowDeviceSetup(true);
+        }
+      } catch (err) {
+        console.error("Failed to enumerate devices", err);
+      }
+    };
+    
+    loadDevices();
+    navigator.mediaDevices.addEventListener('devicechange', loadDevices);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
+  }, [showApiSetup]);
 
   const createNewThread = () => {
     const newId = Math.random().toString(36).substring(7);
@@ -163,6 +206,9 @@ export default function App() {
     try {
       const ai = new GoogleGenAI({ apiKey: apiKey });
       audioPlayerRef.current = new AudioPlayer();
+      if (selectedSpeaker) {
+        audioPlayerRef.current.setDevice(selectedSpeaker);
+      }
       
       const session = await ai.live.connect({
         model: "gemini-3.1-flash-live-preview",
@@ -185,6 +231,7 @@ export default function App() {
               captureScreenTool
             ]}
           ],
+          toolConfig: { includeServerSideToolInvocations: true },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         },
@@ -193,7 +240,8 @@ export default function App() {
             setIsConnected(true);
             setError(null);
             startRecording();
-            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+            const videoConstraints = selectedCamera ? { deviceId: { exact: selectedCamera } } : true;
+            navigator.mediaDevices.getUserMedia({ video: videoConstraints }).then(stream => {
               if (videoRef.current) {
                 videoRef.current.srcObject = stream;
                 videoRef.current.play().catch(console.error);
@@ -287,8 +335,13 @@ export default function App() {
         audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
       });
     });
-    audioRecorderRef.current.start();
-    setIsListening(true);
+    audioRecorderRef.current.start(selectedMic).then(() => {
+      setIsListening(true);
+    }).catch(err => {
+      console.error("Microphone error:", err);
+      setError("Microphone access denied or not found. Please check permissions! 🎤");
+      sessionRef.current?.close();
+    });
   };
 
   const stopRecording = () => {
@@ -381,6 +434,53 @@ export default function App() {
   };
 
   const currentStatus = isSpeaking ? 'Speaking' : isListening ? 'Listening' : isConnected ? 'Idle' : 'Offline';
+
+  if (showDeviceSetup) {
+    return (
+      <div className="min-h-screen bg-[#0d0d0f] flex items-center justify-center p-4 font-sans text-gray-100">
+        <div className="bg-[#131316] border border-white/10 p-8 rounded-3xl max-w-md w-full shadow-2xl">
+          <div className="flex justify-center mb-6">
+            <div className="w-16 h-16 bg-emerald-500/20 rounded-full flex items-center justify-center">
+              <Monitor className="w-8 h-8 text-emerald-500" />
+            </div>
+          </div>
+          <h2 className="text-2xl font-bold text-center mb-2">Hardware Setup 🎧</h2>
+          <p className="text-gray-400 text-center text-sm mb-8">
+            Select your preferred camera, microphone, and speaker for the best experience.
+          </p>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            localStorage.setItem('himo_devices_configured', 'true');
+            setShowDeviceSetup(false);
+          }}>
+            <div className="space-y-4 mb-8">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Camera</label>
+                <select value={selectedCamera} onChange={(e) => { setSelectedCamera(e.target.value); localStorage.setItem('himo_camera_id', e.target.value); }} className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm">
+                  {cameras.map(c => <option key={c.deviceId} value={c.deviceId}>{c.label || `Camera ${c.deviceId.slice(0,5)}`}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Microphone</label>
+                <select value={selectedMic} onChange={(e) => { setSelectedMic(e.target.value); localStorage.setItem('himo_mic_id', e.target.value); }} className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm">
+                  {mics.map(m => <option key={m.deviceId} value={m.deviceId}>{m.label || `Microphone ${m.deviceId.slice(0,5)}`}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Speaker</label>
+                <select value={selectedSpeaker} onChange={(e) => { setSelectedSpeaker(e.target.value); localStorage.setItem('himo_speaker_id', e.target.value); }} className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm">
+                  {speakers.map(s => <option key={s.deviceId} value={s.deviceId}>{s.label || `Speaker ${s.deviceId.slice(0,5)}`}</option>)}
+                </select>
+              </div>
+            </div>
+            <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl transition-colors">
+              Save & Continue
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   if (showApiSetup) {
     return (
@@ -901,6 +1001,45 @@ function SettingsView({ memory, updatePreference }: { memory: any, updatePrefere
                   </button>
                 ))}
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-6">
+          <div className="flex items-center gap-3 text-emerald-400">
+            <Monitor className="w-5 h-5" />
+            <h2 className="text-sm font-bold uppercase tracking-widest">Hardware Devices</h2>
+          </div>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Camera</label>
+              <select 
+                value={selectedCamera} 
+                onChange={(e) => { setSelectedCamera(e.target.value); localStorage.setItem('himo_camera_id', e.target.value); }}
+                className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm"
+              >
+                {cameras.map(c => <option key={c.deviceId} value={c.deviceId}>{c.label || `Camera ${c.deviceId.slice(0,5)}`}</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Microphone</label>
+              <select 
+                value={selectedMic} 
+                onChange={(e) => { setSelectedMic(e.target.value); localStorage.setItem('himo_mic_id', e.target.value); }}
+                className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm"
+              >
+                {mics.map(m => <option key={m.deviceId} value={m.deviceId}>{m.label || `Microphone ${m.deviceId.slice(0,5)}`}</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Speaker</label>
+              <select 
+                value={selectedSpeaker} 
+                onChange={(e) => { setSelectedSpeaker(e.target.value); localStorage.setItem('himo_speaker_id', e.target.value); }}
+                className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm"
+              >
+                {speakers.map(s => <option key={s.deviceId} value={s.deviceId}>{s.label || `Speaker ${s.deviceId.slice(0,5)}`}</option>)}
+              </select>
             </div>
           </div>
         </section>
