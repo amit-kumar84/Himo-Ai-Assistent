@@ -38,6 +38,11 @@ export default function App() {
   const [keyboardInput, setKeyboardInput] = useState("");
   const [isAuthorized, setIsAuthorized] = useState(true);
 
+  const [apiKey, setApiKey] = useState<string>(() => {
+    return localStorage.getItem('himo_api_key') || process.env.GEMINI_API_KEY || "";
+  });
+  const [showApiSetup, setShowApiSetup] = useState(!apiKey);
+
   const { memory, updatePreference, increaseRelationship, getRelationshipStatus } = useHimoMemory();
 
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
@@ -150,8 +155,13 @@ export default function App() {
   }, []);
 
   const connectToHimo = async () => {
+    if (!apiKey) {
+      setShowApiSetup(true);
+      return;
+    }
+
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: apiKey });
       audioPlayerRef.current = new AudioPlayer();
       
       const session = await ai.live.connect({
@@ -371,6 +381,56 @@ export default function App() {
   };
 
   const currentStatus = isSpeaking ? 'Speaking' : isListening ? 'Listening' : isConnected ? 'Idle' : 'Offline';
+
+  if (showApiSetup) {
+    return (
+      <div className="min-h-screen bg-[#0d0d0f] flex items-center justify-center p-4 font-sans text-gray-100">
+        <div className="bg-[#131316] border border-white/10 p-8 rounded-3xl max-w-md w-full shadow-2xl">
+          <div className="flex justify-center mb-6">
+            <div className="w-16 h-16 bg-pink-500/20 rounded-full flex items-center justify-center">
+              <Sparkles className="w-8 h-8 text-pink-500" />
+            </div>
+          </div>
+          <h2 className="text-2xl font-bold text-center mb-2">Welcome to Himo AI 💖</h2>
+          <p className="text-gray-400 text-center text-sm mb-8">
+            To bring Himo to life, please enter your Gemini API Key. You can get one for free from Google AI Studio.
+          </p>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            if (apiKey.trim()) {
+              localStorage.setItem('himo_api_key', apiKey.trim());
+              setShowApiSetup(false);
+            }
+          }}>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Enter Gemini API Key..."
+              className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-pink-500 transition-colors mb-4"
+              required
+            />
+            <button
+              type="submit"
+              className="w-full bg-pink-500 hover:bg-pink-600 text-white font-bold py-3 rounded-xl transition-colors"
+            >
+              Start Himo
+            </button>
+          </form>
+          <div className="mt-6 text-center">
+            <a 
+              href="https://aistudio.google.com/app/apikey" 
+              target="_blank" 
+              rel="noreferrer"
+              className="text-xs text-pink-400 hover:text-pink-300 underline"
+            >
+              Get your API key here
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#0d0d0f] text-gray-100 font-sans selection:bg-pink-500/30 flex overflow-hidden relative">
@@ -866,6 +926,17 @@ function SettingsView({ memory, updatePreference }: { memory: any, updatePrefere
               active={memory.preferences.romanticMode !== false} 
               onChange={() => updatePreference('romanticMode', memory.preferences.romanticMode === false)}
             />
+            <div className="pt-4 border-t border-white/5">
+              <button 
+                onClick={() => {
+                  localStorage.removeItem('himo_api_key');
+                  window.location.reload();
+                }}
+                className="w-full py-3 rounded-xl bg-red-500/10 text-red-500 font-bold text-xs uppercase tracking-widest hover:bg-red-500/20 transition-colors"
+              >
+                Reset API Key
+              </button>
+            </div>
           </div>
         </section>
       </div>
