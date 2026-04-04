@@ -391,6 +391,37 @@ export default function App() {
     };
   }, [isConnected, memory?.preferences?.autoWatch]);
 
+  // 24/7 Auto-Screen Monitor Logic
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    const isAutoScreenEnabled = memory?.preferences?.autoScreenMonitor;
+
+    if (isConnected && isAutoScreenEnabled && window.require) {
+      interval = setInterval(async () => {
+        try {
+          const { ipcRenderer } = window.require('electron');
+          const result = await ipcRenderer.invoke('capture-screen');
+          if (result.data) {
+            sessionRef.current?.sendRealtimeInput({
+              video: { data: result.data, mimeType: 'image/jpeg' }
+            });
+            
+            // Send a silent prompt to trigger evaluation
+            sessionRef.current?.sendRealtimeInput({
+              text: "System prompt: Analyze my PC screen. Act like my roommate/girlfriend. ONLY speak if: 1) I am doing something dangerous or bad. 2) I am doing something very interesting. 3) I am stuck on something. If everything is normal, you MUST remain completely silent."
+            });
+          }
+        } catch (err) {
+          console.error("Auto-screen capture failed:", err);
+        }
+      }, 25000); // Check every 25 seconds to offset from camera
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isConnected, memory?.preferences?.autoScreenMonitor]);
+
   const handleKeyboardSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedInput = keyboardInput.trim();
@@ -1114,6 +1145,11 @@ function SettingsView({
               label="Auto-Watch (24/7 Camera Monitoring)" 
               active={memory.preferences.autoWatch || false} 
               onChange={() => updatePreference('autoWatch', !memory.preferences.autoWatch)}
+            />
+            <SettingToggle 
+              label="Auto-Screen Monitor (24/7 Screen Monitoring)" 
+              active={memory.preferences.autoScreenMonitor || false} 
+              onChange={() => updatePreference('autoScreenMonitor', !memory.preferences.autoScreenMonitor)}
             />
             <SettingToggle 
               label="Auto-Vision Mode" 
