@@ -44,6 +44,24 @@ function createWindow() {
     shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  // Auto-grant media permissions for camera and microphone
+  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    const allowedPermissions = ['media', 'camera', 'microphone'];
+    if (allowedPermissions.includes(permission)) {
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
+
+  mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission) => {
+    const allowedPermissions = ['media', 'camera', 'microphone'];
+    if (allowedPermissions.includes(permission)) {
+      return true;
+    }
+    return false;
+  });
 }
 
 function createTray() {
