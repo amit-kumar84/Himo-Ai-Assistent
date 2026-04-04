@@ -8,7 +8,7 @@ import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { 
   Heart, LayoutDashboard, History, 
   Camera, Monitor, Power, Sliders, MessageSquare, Sparkles,
-  Volume2, Settings, Menu, X, Activity
+  Volume2, Settings, Menu, X, Activity, AlertTriangle, RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import HimoOrb from './components/HimoOrb';
@@ -618,6 +618,15 @@ export default function App() {
           <SettingsView 
             memory={memory} 
             updatePreference={updatePreference} 
+            cameras={cameras}
+            mics={mics}
+            speakers={speakers}
+            selectedCamera={selectedCamera}
+            setSelectedCamera={setSelectedCamera}
+            selectedMic={selectedMic}
+            setSelectedMic={setSelectedMic}
+            selectedSpeaker={selectedSpeaker}
+            setSelectedSpeaker={setSelectedSpeaker}
           />
         ) : view === 'dashboard' ? (
           <div className="flex-1 p-6 md:p-12 overflow-y-auto">
@@ -695,9 +704,36 @@ export default function App() {
         <div className="flex-1 overflow-y-auto scrollbar-hide">
           <div className="max-w-3xl mx-auto py-12 px-6 space-y-12">
             {error && (
-              <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs flex items-center justify-between">
-                <span>{error}</span>
-                <button onClick={() => setError(null)} className="opacity-50 hover:opacity-100">✕</button>
+              <div className="p-6 bg-red-500/10 border border-red-500/30 rounded-2xl flex flex-col gap-4 mx-4 mt-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-red-500/20 rounded-lg">
+                    <AlertTriangle className="w-5 h-5 text-red-400" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-red-400 font-bold text-sm mb-1">Connection Error</h3>
+                    <p className="text-red-300/80 text-xs leading-relaxed">{error}</p>
+                  </div>
+                  <button onClick={() => setError(null)} className="text-red-400/50 hover:text-red-400 transition-colors">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="pl-12 space-y-3">
+                  <div className="text-xs text-red-300/60">
+                    <p className="font-semibold mb-1">Suggested Solutions:</p>
+                    <ul className="list-disc pl-4 space-y-1">
+                      <li>Check your internet connection.</li>
+                      <li>Verify your Gemini API key in Settings.</li>
+                      <li>Ensure your microphone and camera permissions are granted.</li>
+                    </ul>
+                  </div>
+                  <button 
+                    onClick={() => { setError(null); connectToHimo(); }}
+                    className="flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg text-xs font-bold transition-all w-max"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Retry Connection
+                  </button>
+                </div>
               </div>
             )}
             {chatHistory.length === 0 && !error && (
@@ -891,7 +927,31 @@ function SettingToggle({ label, active, onChange }: { label: string, active: boo
   );
 }
 
-function SettingsView({ memory, updatePreference }: { memory: any, updatePreference: (k: string, v: any) => void }) {
+function SettingsView({ 
+  memory, 
+  updatePreference,
+  cameras,
+  mics,
+  speakers,
+  selectedCamera,
+  setSelectedCamera,
+  selectedMic,
+  setSelectedMic,
+  selectedSpeaker,
+  setSelectedSpeaker
+}: { 
+  memory: any, 
+  updatePreference: (k: string, v: any) => void,
+  cameras: MediaDeviceInfo[],
+  mics: MediaDeviceInfo[],
+  speakers: MediaDeviceInfo[],
+  selectedCamera: string,
+  setSelectedCamera: (v: string) => void,
+  selectedMic: string,
+  setSelectedMic: (v: string) => void,
+  selectedSpeaker: string,
+  setSelectedSpeaker: (v: string) => void
+}) {
   const voices = ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
   const colors = ['pink', 'cyan', 'purple', 'gold', 'emerald', 'crimson'];
   const shapes = ['circle', 'square', 'diamond', 'hexagon'];
