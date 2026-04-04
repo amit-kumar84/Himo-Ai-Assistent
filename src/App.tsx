@@ -198,7 +198,8 @@ export default function App() {
   }, []);
 
   const connectToHimo = async () => {
-    if (!apiKey) {
+    if (!apiKey || apiKey.trim() === "") {
+      setError("API Key is missing! Please set your Gemini API Key in the setup screen.");
       setShowApiSetup(true);
       return;
     }
@@ -246,7 +247,10 @@ export default function App() {
                 videoRef.current.srcObject = stream;
                 videoRef.current.play().catch(console.error);
               }
-            }).catch(console.error);
+            }).catch(err => {
+              console.error("Camera error:", err);
+              setError(`Camera Error: ${err.name} - ${err.message}. Please check permissions.`);
+            });
           },
           onmessage: async (message) => {
             if (message.serverContent?.modelTurn) {
@@ -292,9 +296,13 @@ export default function App() {
               }
             }
           },
-          onclose: () => {
+          onclose: (event: any) => {
+            console.log("Connection closed", event);
             setIsConnected(false);
             stopRecording();
+            if (event && event.code !== 1000) {
+              setError(`Connection dropped (Code: ${event.code}). Reason: ${event.reason || "Unknown API Error or Network Issue"}`);
+            }
           },
           onerror: (err: any) => {
             console.error("Live API Error:", err);
@@ -339,7 +347,7 @@ export default function App() {
       setIsListening(true);
     }).catch(err => {
       console.error("Microphone error:", err);
-      setError("Microphone access denied or not found. Please check permissions! 🎤");
+      setError(`Microphone Error: ${err.name} - ${err.message}. Please check hardware and permissions! 🎤`);
       sessionRef.current?.close();
     });
   };

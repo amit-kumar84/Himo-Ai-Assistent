@@ -14,10 +14,13 @@ export class AudioRecorder {
 
   async start(deviceId?: string) {
     const constraints = {
-      audio: deviceId ? { deviceId: { exact: deviceId } } : true
+      audio: deviceId && deviceId.trim() !== "" ? { deviceId: { exact: deviceId } } : true
     };
     this.stream = await navigator.mediaDevices.getUserMedia(constraints);
     this.audioContext = new AudioContext({ sampleRate: 16000 });
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
+    }
     const source = this.audioContext.createMediaStreamSource(this.stream);
     
     // ScriptProcessorNode is deprecated but easier for simple PCM extraction in this context
