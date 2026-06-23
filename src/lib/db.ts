@@ -17,10 +17,18 @@ export interface ChatThread {
   lastUpdated: number;
 }
 
+export interface UserFact {
+  id?: number;
+  category: 'goal' | 'skill' | 'project' | 'weakness' | 'strength' | 'preference' | 'personal' | 'future_plan';
+  fact: string;
+  timestamp: number;
+}
+
 const DB_NAME = 'HimoChatDB';
 const MESSAGES_STORE = 'messages';
 const THREADS_STORE = 'threads';
-const DB_VERSION = 3;
+const MEMORIES_STORE = 'memories';
+const DB_VERSION = 4;
 
 export class ChatDatabase {
   private db: IDBDatabase | null = null;
@@ -54,7 +62,34 @@ export class ChatDatabase {
         if (!db.objectStoreNames.contains(THREADS_STORE)) {
           db.createObjectStore(THREADS_STORE, { keyPath: 'id' });
         }
+
+        if (!db.objectStoreNames.contains(MEMORIES_STORE)) {
+          const mStore = db.createObjectStore(MEMORIES_STORE, { keyPath: 'id', autoIncrement: true });
+          mStore.createIndex('category', 'category', { unique: false });
+        }
       };
+    });
+  }
+
+  async addFact(fact: Omit<UserFact, 'id'>): Promise<number> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const transaction = this.db!.transaction([MEMORIES_STORE], 'readwrite');
+      const store = transaction.objectStore(MEMORIES_STORE);
+      const request = store.add(fact);
+      request.onsuccess = () => resolve(request.result as number);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getFacts(): Promise<UserFact[]> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const transaction = this.db!.transaction([MEMORIES_STORE], 'readonly');
+      const store = transaction.objectStore(MEMORIES_STORE);
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
     });
   }
 
@@ -67,10 +102,9 @@ export class ChatDatabase {
       
       const msgRequest = msgStore.add(message);
       
-      // Update thread last updated
       threadStore.put({
         id: message.threadId,
-        title: message.role === 'user' ? message.text.slice(0, 30) : 'New Chat',
+        title: message.role === 'user' ? message.text.slice(0, 30) : 'Himo Response',
         lastUpdated: message.timestamp
       });
 
@@ -110,9 +144,10 @@ export class ChatDatabase {
   async clearHistory(): Promise<void> {
     await this.init();
     return new Promise((resolve, reject) => {
-      const transaction = this.db!.transaction([MESSAGES_STORE, THREADS_STORE], 'readwrite');
+      const transaction = this.db!.transaction([MESSAGES_STORE, THREADS_STORE, MEMORIES_STORE], 'readwrite');
       transaction.objectStore(MESSAGES_STORE).clear();
       transaction.objectStore(THREADS_STORE).clear();
+      transaction.objectStore(MEMORIES_STORE).clear();
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
     });

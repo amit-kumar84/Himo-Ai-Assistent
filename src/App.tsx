@@ -8,18 +8,47 @@ import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { 
   Heart, LayoutDashboard, History, 
   Camera, Monitor, Power, Sliders, MessageSquare, Sparkles,
-  Volume2, Settings, Menu, X, Activity, AlertTriangle, RefreshCw
+  Volume2, Settings, Menu, X, Activity, AlertTriangle, RefreshCw,
+  Paperclip, FileUp
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import HimoOrb from './components/HimoOrb';
+import HimoCharacter from './components/HimoCharacter';
 import { AudioRecorder, AudioPlayer } from './lib/audio-utils';
-import { SYSTEM_INSTRUCTION, controlSystemTool, captureVisionTool, captureScreenTool } from './lib/constants';
+import { 
+  SYSTEM_INSTRUCTION, 
+  controlSystemTool, 
+  captureVisionTool, 
+  captureScreenTool,
+  storeUserFactTool,
+  getUserFactsTool
+} from './lib/constants';
 import { useHimoMemory } from './hooks/useHimoMemory';
-import { chatDb, ChatMessage, ChatThread } from './lib/db';
-import { Plus, Trash2, Send, Mic, MicOff, MessageCircle, User, Bot } from 'lucide-react';
+import { chatDb, ChatMessage, ChatThread, UserFact } from './lib/db';
+import { Plus, Trash2, Send, Mic, MicOff, MessageCircle, User, Bot, Copy, Square, Check, Paperclip as Attachment } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 type View = 'home' | 'dashboard' | 'settings' | 'history';
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <button 
+      onClick={handleCopy}
+      className="p-1.5 hover:bg-white/10 rounded-md transition-colors text-gray-500 hover:text-gray-300"
+      title="Copy message"
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+    </button>
+  );
+}
 
 export default function App() {
   const [view, setView] = useState<View>('home');
@@ -28,6 +57,7 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [himoResponse, setHimoResponse] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
@@ -36,7 +66,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isVisionActive, setIsVisionActive] = useState(false);
   const [keyboardInput, setKeyboardInput] = useState("");
-  const [isAuthorized, setIsAuthorized] = useState(true);
+  const [userFacts, setUserFacts] = useState<UserFact[]>([]);
 
   const [apiKey, setApiKey] = useState<string>(() => {
     return localStorage.getItem('himo_api_key') || process.env.GEMINI_API_KEY || "";
@@ -52,16 +82,83 @@ export default function App() {
   const [selectedSpeaker, setSelectedSpeaker] = useState<string>(() => localStorage.getItem('himo_speaker_id') || "");
 
   const [showDeviceSetup, setShowDeviceSetup] = useState(false);
+  const [isRealisticMode, setIsRealisticMode] = useState(true);
 
   const { memory, updatePreference, increaseRelationship, getRelationshipStatus } = useHimoMemory();
 
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
   const sessionRef = useRef<any>(null);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [activeVisionTab, setActiveVisionTab] = useState<'camera' | 'screen'>('camera');
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const fullHimoResponseRef = useRef("");
+  const fullTranscriptRef = useRef("");
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Load chat history and threads from IndexedDB
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      setError("File is too large! Please keep it under 5MB. 📁");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        if (isConnected) {
+          if (file.type.startsWith('image/')) {
+            const base64 = (reader.result as string).split(',')[1];
+            sessionRef.current?.sendRealtimeInput({
+              video: { data: base64, mimeType: file.type }
+            });
+            saveMessage('user', `[Uploaded Image: ${file.name}]`);
+          } else if (file.type.startsWith('text/') || file.name.endsWith('.txt')) {
+            const textContent = reader.result as string;
+            sessionRef.current?.sendRealtimeInput({
+              text: `I've uploaded a file named ${file.name}. Here is its content: \n\n${textContent}`
+            });
+            saveMessage('user', `[Uploaded Text File: ${file.name}]`);
+          } else {
+            // For other files, try to send as generic data if possible, but Live session is specific
+            // For now, let's warn if not supported
+            setError("At the moment, only images and text files are supported in Live mode. 🖼️");
+            return;
+          }
+          setError(null);
+        } else {
+          setError("Himo is offline. Please click the microphone button first to send files! 🔌");
+        }
+      } catch (err: any) {
+        setError(`Failed to upload: ${err.message}`);
+      }
+    };
+    reader.onerror = () => setError("Failed to read file.");
+    
+    if (file.type.startsWith('image/')) {
+      reader.readAsDataURL(file);
+    } else {
+      reader.readAsText(file);
+    }
+    
+    // Reset input
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    setShowScrollBottom(scrollHeight - scrollTop - clientHeight > 100);
+  };
+
+  const scrollToBottom = () => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -72,6 +169,8 @@ export default function App() {
           const messages = await chatDb.getMessagesByThread(allThreads[0].id);
           setChatHistory(messages);
         }
+        const facts = await chatDb.getFacts();
+        setUserFacts(facts);
       } catch (err) {
         console.error("Failed to load data:", err);
       }
@@ -87,6 +186,11 @@ export default function App() {
     };
     loadMessages();
   }, [currentThreadId]);
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatHistory, himoResponse, transcript]);
 
   // Load Hardware Devices
   useEffect(() => {
@@ -139,6 +243,64 @@ export default function App() {
     }
   };
 
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      if (screenVideoRef.current && screenVideoRef.current.srcObject) {
+        const stream = screenVideoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach(track => track.stop());
+        screenVideoRef.current.srcObject = null;
+      }
+      setIsScreenSharing(false);
+      setActiveVisionTab('camera');
+      
+      // Notify Himo
+      try {
+        sessionRef.current?.sendRealtimeInput({
+          text: "System notification: The user has stopped sharing their screen."
+        });
+      } catch (e) {
+        console.warn("Could not notify Himo about screen sharing end:", e);
+      }
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = stream;
+          screenVideoRef.current.play().catch(console.error);
+        }
+        setIsScreenSharing(true);
+        setActiveVisionTab('screen');
+        
+        // Notify Himo
+        try {
+          sessionRef.current?.sendRealtimeInput({
+            text: "System notification: The user has started sharing their screen. You can now use the `capture_screen` tool to see what they are seeing whenever they ask you to look at their screen or if you need to help them with something on their screen."
+          });
+        } catch (e) {
+          console.warn("Could not notify Himo about screen sharing start:", e);
+        }
+        
+        // Handle user stopping screen share from browser UI
+        stream.getVideoTracks()[0].onended = () => {
+          setIsScreenSharing(false);
+          setActiveVisionTab('camera');
+          if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
+          
+          try {
+            sessionRef.current?.sendRealtimeInput({
+              text: "System notification: The user has stopped sharing their screen."
+            });
+          } catch (e) {
+            console.warn("Could not notify Himo about screen sharing end from track:", e);
+          }
+        };
+      } catch (err: any) {
+        console.error("Screen share error:", err);
+        setError(`Screen Share Error: ${err.message}`);
+      }
+    }
+  };
+
   const handleToolCall = useCallback(async (call: any) => {
     const { name, args } = call;
     console.log(`Tool call: ${name}`, args);
@@ -177,6 +339,8 @@ export default function App() {
       }
       return { error: "Camera not accessible." };
     } else if (name === "capture_screen") {
+      setIsVisionActive(true);
+      setTimeout(() => setIsVisionActive(false), 3000); // Reset after 3s
       if (window.require) {
         try {
           const { ipcRenderer } = window.require('electron');
@@ -191,8 +355,43 @@ export default function App() {
         } catch (err: any) {
           return { error: `Screen capture failed: ${err.message}` };
         }
+      } else if (screenVideoRef.current && isScreenSharing) {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = screenVideoRef.current.videoWidth || 1920;
+          canvas.height = screenVideoRef.current.videoHeight || 1080;
+          canvas.getContext('2d')?.drawImage(screenVideoRef.current, 0, 0, canvas.width, canvas.height);
+          const base64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+          
+          sessionRef.current?.sendRealtimeInput({
+            video: { data: base64, mimeType: 'image/jpeg' }
+          });
+          return { result: "I can see your screen now!" };
+        } catch (err: any) {
+          return { error: `Browser screen capture failed: ${err.message}` };
+        }
       }
-      return { error: "Screen capture is only available in the desktop app." };
+      return { error: "Screen capture is not active. Please click the Monitor icon to share your screen first." };
+    } else if (name === "store_user_fact") {
+      try {
+        await chatDb.addFact({
+          category: args.category,
+          fact: args.fact,
+          timestamp: Date.now()
+        });
+        const updatedFacts = await chatDb.getFacts();
+        setUserFacts(updatedFacts);
+        return { result: `I've remembered this for you: "${args.fact}"` };
+      } catch (err: any) {
+        return { error: `Failed to save fact: ${err.message}` };
+      }
+    } else if (name === "get_user_facts") {
+      try {
+        const facts = await chatDb.getFacts();
+        return { result: JSON.stringify(facts) };
+      } catch (err: any) {
+        return { error: `Failed to retrieve facts: ${err.message}` };
+      }
     }
     return { error: "Unknown tool" };
   }, []);
@@ -229,13 +428,15 @@ export default function App() {
               { name: "search_spotify", description: "Search Spotify", parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ["query"] } },
               controlSystemTool,
               captureVisionTool,
-              captureScreenTool
+              captureScreenTool,
+              storeUserFactTool,
+              getUserFactsTool
             ]}
           ],
-          toolConfig: { includeServerSideToolInvocations: true },
+          toolConfig: { includeServerSideToolInvocations: true } as any,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
-        },
+        } as any,
         callbacks: {
           onopen: () => {
             setIsConnected(true);
@@ -254,6 +455,14 @@ export default function App() {
           },
           onmessage: async (message) => {
             if (message.serverContent?.modelTurn) {
+              setIsThinking(false);
+              // Save user transcript if exists and is new
+              if (fullTranscriptRef.current) {
+                saveMessage('user', fullTranscriptRef.current);
+                fullTranscriptRef.current = "";
+                setTranscript("");
+              }
+
               const parts = message.serverContent.modelTurn.parts;
               for (const part of parts) {
                 if (part.inlineData?.data) {
@@ -261,9 +470,19 @@ export default function App() {
                   audioPlayerRef.current?.playChunk(part.inlineData.data);
                 }
                 if (part.text) {
-                  setHimoResponse(prev => prev + part.text);
-                  saveMessage('himo', part.text);
+                  fullHimoResponseRef.current += part.text;
+                  setHimoResponse(fullHimoResponseRef.current);
                   increaseRelationship();
+                }
+              }
+            }
+
+            if (message.serverContent?.outputTranscription) {
+              const text = message.serverContent.outputTranscription.text || "";
+              if (text.trim()) {
+                if (!fullHimoResponseRef.current.includes(text)) {
+                   fullHimoResponseRef.current += text;
+                   setHimoResponse(fullHimoResponseRef.current);
                 }
               }
             }
@@ -271,11 +490,20 @@ export default function App() {
             if (message.serverContent?.interrupted) {
               audioPlayerRef.current?.stop();
               setIsSpeaking(false);
+              if (fullHimoResponseRef.current) {
+                saveMessage('himo', fullHimoResponseRef.current);
+                fullHimoResponseRef.current = "";
+                setHimoResponse("");
+              }
             }
 
             if (message.serverContent?.turnComplete) {
               setIsSpeaking(false);
-              setHimoResponse("");
+              if (fullHimoResponseRef.current) {
+                saveMessage('himo', fullHimoResponseRef.current);
+                fullHimoResponseRef.current = "";
+                setHimoResponse("");
+              }
             }
 
             if (message.toolCall) {
@@ -292,7 +520,7 @@ export default function App() {
               const text = message.serverContent.inputTranscription.text || "";
               if (text.trim()) {
                 setTranscript(text);
-                saveMessage('user', text);
+                fullTranscriptRef.current = text;
               }
             }
           },
@@ -404,17 +632,33 @@ export default function App() {
     let interval: NodeJS.Timeout;
     const isAutoScreenEnabled = memory?.preferences?.autoScreenMonitor;
 
-    if (isConnected && isAutoScreenEnabled && window.require) {
+    if (isConnected && isAutoScreenEnabled) {
       interval = setInterval(async () => {
         try {
-          const { ipcRenderer } = window.require('electron');
-          const result = await ipcRenderer.invoke('capture-screen');
-          if (result.data) {
+          if (window.require) {
+            const { ipcRenderer } = window.require('electron');
+            const result = await ipcRenderer.invoke('capture-screen');
+            if (result.data) {
+              sessionRef.current?.sendRealtimeInput({
+                video: { data: result.data, mimeType: 'image/jpeg' }
+              });
+              
+              // Send a silent prompt to trigger evaluation
+              sessionRef.current?.sendRealtimeInput({
+                text: "System prompt: Analyze my PC screen. Act like my roommate/girlfriend. ONLY speak if: 1) I am doing something dangerous or bad. 2) I am doing something very interesting. 3) I am stuck on something. If everything is normal, you MUST remain completely silent."
+              });
+            }
+          } else if (screenVideoRef.current && isScreenSharing) {
+            const canvas = document.createElement('canvas');
+            canvas.width = screenVideoRef.current.videoWidth || 1280;
+            canvas.height = screenVideoRef.current.videoHeight || 720;
+            canvas.getContext('2d')?.drawImage(screenVideoRef.current, 0, 0, canvas.width, canvas.height);
+            const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+            
             sessionRef.current?.sendRealtimeInput({
-              video: { data: result.data, mimeType: 'image/jpeg' }
+              video: { data: base64, mimeType: 'image/jpeg' }
             });
             
-            // Send a silent prompt to trigger evaluation
             sessionRef.current?.sendRealtimeInput({
               text: "System prompt: Analyze my PC screen. Act like my roommate/girlfriend. ONLY speak if: 1) I am doing something dangerous or bad. 2) I am doing something very interesting. 3) I am stuck on something. If everything is normal, you MUST remain completely silent."
             });
@@ -428,7 +672,7 @@ export default function App() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isConnected, memory?.preferences?.autoScreenMonitor]);
+  }, [isConnected, memory?.preferences?.autoScreenMonitor, isScreenSharing]);
 
   const handleKeyboardSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -448,6 +692,7 @@ export default function App() {
     const userInput = trimmedInput;
     setKeyboardInput("");
     await saveMessage('user', userInput);
+    setIsThinking(true);
 
     if (isConnected) {
       try {
@@ -464,6 +709,7 @@ export default function App() {
   };
 
   const clearChatHistory = async () => {
+    if (!window.confirm("Are you sure you want to clear all conversations? 🗑️")) return;
     try {
       await chatDb.clearHistory();
       setChatHistory([]);
@@ -572,7 +818,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0d0d0f] text-gray-100 font-sans selection:bg-pink-500/30 flex overflow-hidden relative">
+    <div className="h-screen bg-[#0d0d0f] text-gray-100 font-sans selection:bg-pink-500/30 flex overflow-hidden relative">
       {/* Mobile Overlay */}
       {isSidebarOpen && (
         <div 
@@ -602,14 +848,14 @@ export default function App() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 space-y-1">
-          {threads.map(thread => (
-            <button
-              key={thread.id}
-              onClick={() => setCurrentThreadId(thread.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs text-left transition-all group ${
-                currentThreadId === thread.id ? 'bg-white/10 text-white' : 'text-gray-500 hover:bg-white/5'
-              }`}
-            >
+            {threads.map(thread => (
+              <button
+                key={`thread-${thread.id}`}
+                onClick={() => setCurrentThreadId(thread.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs text-left transition-all group ${
+                  currentThreadId === thread.id ? 'bg-white/10 text-white' : 'text-gray-500 hover:bg-white/5'
+                }`}
+              >
               <MessageCircle className="w-4 h-4 opacity-50" />
               <span className="truncate flex-1">{thread.title}</span>
             </button>
@@ -652,7 +898,7 @@ export default function App() {
       </aside>
 
       {/* Main Chat Interface */}
-      <main className="flex-1 flex flex-col relative bg-[#0d0d0f]">
+      <main className="flex-1 flex flex-col relative bg-[#0d0d0f] h-screen overflow-hidden">
         {view === 'settings' ? (
           <SettingsView 
             memory={memory} 
@@ -669,7 +915,7 @@ export default function App() {
           />
         ) : view === 'dashboard' ? (
           <div className="flex-1 p-6 md:p-12 overflow-y-auto">
-            <div className="max-w-4xl mx-auto space-y-8 md:space-y-12">
+            <div className="max-w-4xl mx-auto space-y-8 md:space-y-12 px-6">
               <header className="space-y-2">
                 <h1 className="text-3xl md:text-4xl font-bold text-white tracking-tight">Himo Dashboard</h1>
                 <p className="text-sm text-gray-500">Overview of your relationship and system status.</p>
@@ -698,6 +944,34 @@ export default function App() {
                   </div>
                 </DashboardCard>
               </div>
+
+              {userFacts.length > 0 && (
+                <section className="space-y-6">
+                  <div className="flex items-center gap-3 text-pink-400">
+                    <History className="w-5 h-5" />
+                    <h2 className="text-xs font-bold uppercase tracking-widest">Long-term Memories</h2>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {['goal', 'skill', 'project', 'future_plan'].map(cat => {
+                      const facts = userFacts.filter(f => f.category === cat);
+                      if (facts.length === 0) return null;
+                      return (
+                        <div key={`fact-cat-${cat}`} className="p-5 bg-white/[0.02] border border-white/5 rounded-2xl space-y-3">
+                          <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">{cat.replace('_', ' ')}s</h3>
+                          <ul className="space-y-2">
+                            {facts.map((f, fi) => (
+                              <li key={`fact-${f.id || fi}`} className="text-xs text-gray-300 flex items-start gap-2">
+                                <span className="text-pink-500 mt-1">•</span>
+                                <span>{f.fact}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
             </div>
           </div>
         ) : (
@@ -725,10 +999,11 @@ export default function App() {
               <span className="text-[10px] font-bold uppercase text-gray-400">{currentStatus}</span>
             </div>
             <button 
-              onClick={toggleConnection}
-              className={`p-2 rounded-lg transition-all ${isConnected ? 'text-pink-400 bg-pink-500/10' : 'text-gray-500 hover:bg-white/5'}`}
+              onClick={toggleScreenShare}
+              className={`p-2 rounded-lg transition-all ${isScreenSharing ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-500 hover:bg-white/5'}`}
+              title={isScreenSharing ? "Stop Screen Share" : "Share Screen"}
             >
-              {isConnected ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+              <Monitor className="w-5 h-5" />
             </button>
             <button 
               onClick={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
@@ -740,8 +1015,12 @@ export default function App() {
         </header>
 
         {/* Message Area */}
-        <div className="flex-1 overflow-y-auto scrollbar-hide">
-          <div className="max-w-3xl mx-auto py-12 px-6 space-y-12">
+        <div 
+          ref={containerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto chat-container scroll-smooth"
+        >
+          <div className="w-full max-w-4xl mx-auto">
             {error && (
               <div className="p-6 bg-red-500/10 border border-red-500/30 rounded-2xl flex flex-col gap-4 mx-4 mt-4">
                 <div className="flex items-start gap-3">
@@ -776,66 +1055,240 @@ export default function App() {
               </div>
             )}
             {chatHistory.length === 0 && !error && (
-              <div className="h-[60vh] flex flex-col items-center justify-center text-center space-y-6">
-                <div className="w-20 h-20 bg-gradient-to-br from-pink-500 to-purple-600 rounded-3xl flex items-center justify-center shadow-2xl shadow-pink-500/20 animate-bounce">
+              <div className="h-[70vh] flex flex-col items-center justify-center text-center space-y-8 px-6">
+                <motion.div 
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  className="w-20 h-20 bg-gradient-to-br from-pink-500 to-purple-600 rounded-3xl flex items-center justify-center shadow-2xl shadow-pink-500/20"
+                >
                   <Heart className="w-10 h-10 text-white fill-white/20" />
+                </motion.div>
+                <div className="space-y-4">
+                  <h2 className="text-3xl font-bold text-white tracking-tight">How can I help you today, Amit?</h2>
+                  <p className="text-gray-400 text-sm max-w-sm mx-auto leading-relaxed">
+                    I'm Himo, your AI assistant and companion. We can talk about your day, search the web, or just hang out.
+                  </p>
                 </div>
-                <div className="space-y-2">
-                  <h2 className="text-2xl font-bold text-white">How can I help you today, Amit?</h2>
-                  <p className="text-gray-500 text-sm">I'm Himo, your AI companion. Ready for anything.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-md">
+                  {[
+                    "Tell me a sweet story 📖",
+                    "What's the weather like? ☁️",
+                    "Remind me why you like me 💖",
+                    "Search for relaxing music 🎵"
+                  ].map(prompt => (
+                    <button 
+                      key={prompt}
+                      onClick={() => setKeyboardInput(prompt.replace(/ [^ ]+$/, ''))}
+                      className="px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-left text-xs text-gray-300 hover:bg-white/10 hover:border-pink-500/30 transition-all"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
 
             {chatHistory.map((chat, i) => (
               <motion.div 
-                key={i}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`flex gap-3 md:gap-6 ${chat.role === 'user' ? 'flex-row-reverse' : ''}`}
+                key={`msg-${chat.id || 'new'}-${i}-${chat.timestamp}`}
+                layout
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
+                className={`flex gap-3 md:gap-6 py-8 group/msg transition-colors ${chat.role === 'user' ? 'bg-white/[0.01]' : ''}`}
               >
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                  chat.role === 'user' ? 'bg-cyan-500/20 text-cyan-400' : 'bg-pink-500/20 text-pink-400'
-                }`}>
-                  {chat.role === 'user' ? <User className="w-4 h-4 md:w-5 h-5" /> : <Bot className="w-4 h-4 md:w-5 h-5" />}
-                </div>
-                <div className={`flex-1 space-y-2 ${chat.role === 'user' ? 'text-right' : ''}`}>
-                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
-                    <span>{chat.role === 'user' ? 'Amit' : 'Himo'}</span>
-                    <span className="opacity-30">•</span>
-                    <span className="opacity-30">{new Date(chat.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <div className="max-w-4xl mx-auto w-full flex gap-3 md:gap-6 px-6">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                    chat.role === 'user' ? 'bg-cyan-500/20 text-cyan-400' : 'bg-pink-500/20 text-pink-400'
+                  }`}>
+                    {chat.role === 'user' ? <User className="w-4 h-4 md:w-5 h-5" /> : <Bot className="w-4 h-4 md:w-5 h-5" />}
                   </div>
-                  <div className={`prose prose-invert prose-sm max-w-none ${chat.role === 'user' ? 'bg-white/5 p-3 md:p-4 rounded-2xl inline-block text-left' : ''}`}>
-                    <ReactMarkdown>{chat.text}</ReactMarkdown>
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center justify-between group/meta">
+                      <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                        <span>{chat.role === 'user' ? 'Amit' : 'Himo'}</span>
+                        <span className="opacity-30">•</span>
+                        <span className="opacity-30">{new Date(chat.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                      <div className="md:opacity-0 group-hover/meta:opacity-100 transition-opacity">
+                        <CopyButton text={chat.text} />
+                      </div>
+                    </div>
+                    <div className="prose prose-invert prose-sm max-w-none">
+                      <ReactMarkdown>{chat.text}</ReactMarkdown>
+                    </div>
                   </div>
                 </div>
               </motion.div>
             ))}
-            <div ref={chatEndRef} className="h-24" />
+
+            {/* Live User Transcript */}
+            {transcript && (
+              <motion.div 
+                layout
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex gap-3 md:gap-6 py-8 bg-cyan-500/5 mt-4 rounded-3xl border border-cyan-500/10 mx-4"
+              >
+                <div className="max-w-4xl mx-auto w-full flex gap-3 md:gap-6 px-6">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-cyan-500/20 text-cyan-400">
+                    <User className="w-4 h-4 md:w-5 h-5" />
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-cyan-500/60">
+                      <span>Amit</span>
+                      <span className="opacity-30">•</span>
+                      <span className="animate-pulse">Listening...</span>
+                    </div>
+                    <div className="prose prose-invert prose-sm max-w-none text-cyan-100/70">
+                      {transcript}
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* Thinking State */}
+            {isThinking && (
+              <motion.div 
+                layout
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex gap-3 md:gap-6 py-8"
+              >
+                <div className="max-w-4xl mx-auto w-full flex gap-3 md:gap-6 px-6">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-pink-500/20 text-pink-400">
+                    <Bot className="w-4 h-4 md:w-5 h-5" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-1.5 mb-2">
+                       <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Himo</span>
+                       <span className="w-1 h-1 bg-pink-500 rounded-full animate-pulse" />
+                    </div>
+                    <div className="flex gap-1">
+                      <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 1 }} className="w-2 h-2 bg-pink-500/40 rounded-full" />
+                      <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-2 h-2 bg-pink-500/40 rounded-full" />
+                      <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-2 h-2 bg-pink-500/40 rounded-full" />
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* Live Himo Response */}
+            {himoResponse && (
+              <motion.div 
+                layout
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex gap-3 md:gap-6 py-8"
+              >
+                <div className="max-w-4xl mx-auto w-full flex gap-3 md:gap-6 px-6">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-pink-500/20 text-pink-400">
+                    <Bot className="w-4 h-4 md:w-5 h-5" />
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                      <span>Himo</span>
+                      <span className="opacity-30">•</span>
+                      <span className="animate-pulse text-pink-500">Live Response...</span>
+                    </div>
+                    <div className="prose prose-invert prose-sm max-w-none">
+                      <ReactMarkdown>{himoResponse + "▎"}</ReactMarkdown>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+            <div ref={chatEndRef} className="h-4" />
           </div>
+          
+          <AnimatePresence>
+            {showScrollBottom && (
+              <motion.button
+                initial={{ opacity: 0, scale: 0.8, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.8, y: 20 }}
+                onClick={scrollToBottom}
+                className="fixed bottom-32 left-1/2 -translate-x-1/2 p-3 bg-[#1e1e20] border border-white/10 rounded-full shadow-2xl text-gray-400 hover:text-white hover:bg-[#252527] transition-all z-20"
+              >
+                <Plus className="w-5 h-5 rotate-45 transform translate-y-[2px]" />
+              </motion.button>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Input Area */}
-        <div className="p-6 bg-gradient-to-t from-[#0d0d0f] via-[#0d0d0f] to-transparent sticky bottom-0">
+        <div className="pb-8 pt-2 px-4 md:px-6 sticky bottom-0 bg-gradient-to-t from-[#0d0d0f] via-[#0d0d0f] to-transparent">
           <div className="max-w-3xl mx-auto relative">
             <form onSubmit={handleKeyboardSubmit} className="relative group">
+              <input 
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                onChange={handleFileChange}
+                accept="image/*,application/pdf,text/*"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="absolute left-3 top-1/2 -translate-y-1/2 p-2.5 text-gray-500 hover:text-white bg-white/5 hover:bg-white/10 rounded-xl transition-all border border-white/5"
+                title="Attach file"
+              >
+                <Paperclip className="w-5 h-5" />
+              </button>
               <input 
                 type="text"
                 value={keyboardInput}
                 onChange={(e) => setKeyboardInput(e.target.value)}
                 placeholder="Message Himo..."
-                className="w-full bg-[#1a1a1c] border border-white/10 rounded-2xl py-4 px-6 pr-12 text-sm outline-none focus:border-pink-500/50 focus:bg-[#202022] transition-all shadow-2xl"
+                className="w-full bg-[#1a1a1c] border border-white/10 rounded-[24px] py-4 pl-14 pr-24 text-sm outline-none focus:ring-1 focus:ring-pink-500/30 focus:border-pink-500/50 focus:bg-[#202022] transition-all shadow-[0_0_30px_rgba(0,0,0,0.5)]"
               />
-              <button 
-                type="submit"
-                disabled={!keyboardInput.trim()}
-                className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-gray-500 hover:text-pink-400 disabled:opacity-0 transition-all"
-              >
-                <Send className="w-5 h-5" />
-              </button>
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                {isSpeaking && (
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      audioPlayerRef.current?.stop();
+                      setIsSpeaking(false);
+                      if (fullHimoResponseRef.current) {
+                        saveMessage('himo', fullHimoResponseRef.current);
+                        fullHimoResponseRef.current = "";
+                        setHimoResponse("");
+                      }
+                    }}
+                    className="p-2.5 text-pink-500 hover:text-pink-400 bg-pink-500/10 rounded-xl transition-all"
+                    title="Stop speaking"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                  </button>
+                )}
+                
+                <button 
+                  type="button"
+                  onClick={toggleConnection}
+                  className={`p-2.5 rounded-xl transition-all ${isConnected ? 'text-pink-400 bg-pink-500/10' : 'text-gray-500 hover:bg-white/5'}`}
+                  title={isConnected ? "Listening..." : "Voice Mode"}
+                >
+                  {isConnected ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+                </button>
+
+                <button 
+                  type="submit"
+                  disabled={!keyboardInput.trim()}
+                  className="p-2.5 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-pink-400 rounded-xl disabled:opacity-0 transition-all border border-white/5"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              </div>
             </form>
-            <div className="flex items-center justify-center gap-4 mt-4 text-[10px] text-gray-600 font-bold uppercase tracking-widest">
-              <span>Voice Mode: {isConnected ? 'Active' : 'Standby'}</span>
+            <div className="flex items-center justify-center gap-6 mt-4 text-[9px] text-gray-500 font-bold uppercase tracking-[0.2em]">
+              <span className="flex items-center gap-1.5">
+                <div className={`w-1 h-1 rounded-full ${isConnected ? 'bg-green-500' : 'bg-gray-700'}`} />
+                Live Mode: {isConnected ? 'Active' : 'Standby'}
+              </span>
+              <span className="opacity-20">|</span>
+              <span>Gemini 3.1 Flash</span>
             </div>
           </div>
         </div>
@@ -857,20 +1310,83 @@ export default function App() {
         </div>
         <div className="flex-1 overflow-y-auto scrollbar-hide">
           <div className="p-8 flex flex-col items-center gap-8">
-          <div className="relative group cursor-pointer" onClick={toggleConnection}>
-            <HimoOrb 
-              isListening={isListening} 
-              isSpeaking={isSpeaking} 
-              appearance={memory.preferences.appearance}
-            />
-          </div>
+            <div className="relative group cursor-pointer w-full max-w-lg aspect-square flex items-center justify-center min-h-[300px]" onClick={toggleConnection}>
+              {isRealisticMode ? (
+                <HimoCharacter 
+                  isListening={isListening} 
+                  isSpeaking={isSpeaking} 
+                />
+              ) : (
+                <HimoOrb 
+                  isListening={isListening} 
+                  isSpeaking={isSpeaking} 
+                  appearance={memory.preferences.appearance}
+                />
+              )}
+              
+              {!isConnected && !isThinking && (
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm rounded-full z-10"
+                >
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-16 h-16 bg-pink-500 rounded-full flex items-center justify-center shadow-[0_0_30px_rgba(236,72,153,0.5)]">
+                        <Power className="w-8 h-8 text-white" />
+                    </div>
+                    <span className="text-xs font-bold uppercase tracking-widest text-white">Click to Connect</span>
+                  </div>
+                </motion.div>
+              )}
+            </div>
 
           <div className="w-full space-y-6">
             <DashboardCard title="Vision Feed" icon={<Camera className="text-pink-400" />}>
+              {isScreenSharing && (
+                <div className="flex gap-2 mb-3 bg-white/5 p-1 rounded-xl border border-white/5">
+                  <button
+                    onClick={() => setActiveVisionTab('camera')}
+                    className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
+                      activeVisionTab === 'camera' 
+                        ? 'bg-pink-500 text-white shadow-md' 
+                        : 'text-gray-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Webcam
+                  </button>
+                  <button
+                    onClick={() => setActiveVisionTab('screen')}
+                    className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
+                      activeVisionTab === 'screen' 
+                        ? 'bg-pink-500 text-white shadow-md' 
+                        : 'text-gray-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Screen Share
+                  </button>
+                </div>
+              )}
               <div className={`aspect-video bg-black rounded-xl overflow-hidden border transition-all duration-500 relative ${
                 isVisionActive ? 'border-pink-500 shadow-[0_0_20px_rgba(236,72,153,0.3)]' : 'border-white/5'
               }`}>
-                <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover transition-opacity duration-500 ${isVisionActive ? 'opacity-100' : 'opacity-60'}`} />
+                <video 
+                  ref={videoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${
+                    activeVisionTab === 'camera' ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
+                  }`} 
+                />
+                <video 
+                  ref={screenVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className={`absolute inset-0 w-full h-full object-contain bg-[#030303] transition-opacity duration-500 ${
+                    activeVisionTab === 'screen' ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
+                  }`} 
+                />
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                   <div className="w-full h-px bg-pink-500/20 animate-scan" />
                 </div>
@@ -895,6 +1411,15 @@ export default function App() {
 
             <DashboardCard title="Himo Status" icon={<Sparkles className="text-cyan-400" />}>
               <div className="space-y-3">
+                <div className="flex items-center justify-between p-2 bg-white/5 rounded-lg">
+                  <span className="text-[10px] font-bold text-gray-500 uppercase">3D Character</span>
+                  <button 
+                    onClick={() => setIsRealisticMode(!isRealisticMode)}
+                    className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all ${isRealisticMode ? 'bg-pink-500 text-white' : 'bg-gray-700 text-gray-300'}`}
+                  >
+                    {isRealisticMode ? 'ON' : 'OFF'}
+                  </button>
+                </div>
                 <StatusItem label="Relationship" value={getRelationshipStatus()} />
                 <StatusItem label="Engine" value="Gemini" />
               </div>

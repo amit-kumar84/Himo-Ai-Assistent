@@ -24,7 +24,7 @@ export function useHimoMemory() {
           particleEffect: 'orbit'
         }
       },
-      relationshipLevel: 0,
+      relationshipLevel: 3, // Start as girlfriend since requested
       lastInteraction: new Date().toISOString()
     };
   });
@@ -48,7 +48,7 @@ export function useHimoMemory() {
   };
 
   const getRelationshipStatus = () => {
-    if (memory.relationshipLevel >= 3) return 'Girlfriend';
+    if (memory.relationshipLevel >= 3) return 'Girlfriend / Everything';
     if (memory.relationshipLevel >= 2) return 'Close Friend';
     if (memory.relationshipLevel >= 1) return 'Friend';
     return 'Stranger';

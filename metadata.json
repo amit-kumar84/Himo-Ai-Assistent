@@ -1,5 +1,5 @@
 {
   "name": "Himo AI Assistant",
-  "description": "A cute and caring browser-based AI assistant that follows voice commands and communicates smoothly.",
-  "requestFramePermissions": ["microphone", "camera"]
+  "description": "Amit's cute, intelligent 24-year-old female AI companion Himo. She is your girlfriend, friend, and everything.",
+  "requestFramePermissions": ["microphone", "camera", "display-capture"]
 }
